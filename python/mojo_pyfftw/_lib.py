@@ -66,7 +66,7 @@ def _scratch_size(n: int) -> int:
         raise ValueError("transform length must be positive")
     if not (n & (n - 1)):
         return 2 * n
-    return 3 * _next_power_of_two(2 * n - 1)
+    return 3 * _next_power_of_two(2 * n - 1) + n
 
 
 def _require_buffer(

@@ -1,3 +1,4 @@
+from std.bit import bit_reverse
 from std.math import cos, sin
 from std.runtime import initialize_runtime
 from std.runtime.asyncrt import TaskGroup
@@ -80,26 +81,164 @@ def radix2_stages(
     comptime W = simd_width_of[DType.float64]()
     comptime C = W // 2
     var length = start_length
-    var twiddle_offset = (length >> 1) - 1
-    while length <= end_length:
+    if length == 2 and end_length >= 4:
         var base = base_start
+        while base < base_end:
+            var ar = data[2 * base]
+            var ai = data[2 * base + 1]
+            var br = data[2 * (base + 1)]
+            var bi = data[2 * (base + 1) + 1]
+            var cr = data[2 * (base + 2)]
+            var ci = data[2 * (base + 2) + 1]
+            var dr = data[2 * (base + 3)]
+            var di = data[2 * (base + 3) + 1]
+            var p0r = ar + br
+            var p0i = ai + bi
+            var p1r = ar - br
+            var p1i = ai - bi
+            var q0r = cr + dr
+            var q0i = ci + di
+            var q1r = cr - dr
+            var q1i = ci - di
+            data[2 * base] = p0r + q0r
+            data[2 * base + 1] = p0i + q0i
+            data[2 * (base + 2)] = p0r - q0r
+            data[2 * (base + 2) + 1] = p0i - q0i
+            data[2 * (base + 1)] = p1r - Float64(direction) * q1i
+            data[2 * (base + 1) + 1] = p1i + Float64(direction) * q1r
+            data[2 * (base + 3)] = p1r + Float64(direction) * q1i
+            data[2 * (base + 3) + 1] = p1i - Float64(direction) * q1r
+            base += 4
+        length = 8
+    while 2 * length <= end_length:
+        var quarter = length >> 1
+        var first_twiddle_offset = quarter - 1
+        var second_twiddle_offset = length - 1
+        var base = base_start
+        while base < base_end:
+            var k = 0
+            while k + C <= quarter:
+                var a = data.load[width=W](2 * (base + k)).deinterleave()
+                var b = data.load[width=W](
+                    2 * (base + quarter + k)
+                ).deinterleave()
+                var c = data.load[width=W](
+                    2 * (base + length + k)
+                ).deinterleave()
+                var d = data.load[width=W](
+                    2 * (base + length + quarter + k)
+                ).deinterleave()
+                var w1 = twiddles.load[width=W](
+                    2 * (first_twiddle_offset + k)
+                ).deinterleave()
+                var w1i = w1[1] * Float64(-direction)
+                var bwr = b[0] * w1[0] - b[1] * w1i
+                var bwi = b[0] * w1i + b[1] * w1[0]
+                var dwr = d[0] * w1[0] - d[1] * w1i
+                var dwi = d[0] * w1i + d[1] * w1[0]
+                var p0r = a[0] + bwr
+                var p0i = a[1] + bwi
+                var p1r = a[0] - bwr
+                var p1i = a[1] - bwi
+                var q0r = c[0] + dwr
+                var q0i = c[1] + dwi
+                var q1r = c[0] - dwr
+                var q1i = c[1] - dwi
+                var w20 = twiddles.load[width=W](
+                    2 * (second_twiddle_offset + k)
+                ).deinterleave()
+                var w21 = twiddles.load[width=W](
+                    2 * (second_twiddle_offset + quarter + k)
+                ).deinterleave()
+                var w20i = w20[1] * Float64(-direction)
+                var w21i = w21[1] * Float64(-direction)
+                var q0wr = q0r * w20[0] - q0i * w20i
+                var q0wi = q0r * w20i + q0i * w20[0]
+                var q1wr = q1r * w21[0] - q1i * w21i
+                var q1wi = q1r * w21i + q1i * w21[0]
+                data.store(
+                    2 * (base + k),
+                    (p0r + q0wr).interleave(p0i + q0wi),
+                )
+                data.store(
+                    2 * (base + length + k),
+                    (p0r - q0wr).interleave(p0i - q0wi),
+                )
+                data.store(
+                    2 * (base + quarter + k),
+                    (p1r + q1wr).interleave(p1i + q1wi),
+                )
+                data.store(
+                    2 * (base + length + quarter + k),
+                    (p1r - q1wr).interleave(p1i - q1wi),
+                )
+                k += C
+            while k < quarter:
+                var ai = base + k
+                var bi = ai + quarter
+                var ci = ai + length
+                var di = ci + quarter
+                var ar = data[2 * ai]
+                var aim = data[2 * ai + 1]
+                var br = data[2 * bi]
+                var bim = data[2 * bi + 1]
+                var cr = data[2 * ci]
+                var cim = data[2 * ci + 1]
+                var dr = data[2 * di]
+                var dim = data[2 * di + 1]
+                var w1r = twiddles[2 * (first_twiddle_offset + k)]
+                var w1i = twiddles[2 * (first_twiddle_offset + k) + 1] * Float64(-direction)
+                var bwr = br * w1r - bim * w1i
+                var bwi = br * w1i + bim * w1r
+                var dwr = dr * w1r - dim * w1i
+                var dwi = dr * w1i + dim * w1r
+                var p0r = ar + bwr
+                var p0i = aim + bwi
+                var p1r = ar - bwr
+                var p1i = aim - bwi
+                var q0r = cr + dwr
+                var q0i = cim + dwi
+                var q1r = cr - dwr
+                var q1i = cim - dwi
+                var w20r = twiddles[2 * (second_twiddle_offset + k)]
+                var w20i = twiddles[2 * (second_twiddle_offset + k) + 1] * Float64(-direction)
+                var w21r = twiddles[2 * (second_twiddle_offset + quarter + k)]
+                var w21i = twiddles[2 * (second_twiddle_offset + quarter + k) + 1] * Float64(-direction)
+                var q0wr = q0r * w20r - q0i * w20i
+                var q0wi = q0r * w20i + q0i * w20r
+                var q1wr = q1r * w21r - q1i * w21i
+                var q1wi = q1r * w21i + q1i * w21r
+                data[2 * ai] = p0r + q0wr
+                data[2 * ai + 1] = p0i + q0wi
+                data[2 * ci] = p0r - q0wr
+                data[2 * ci + 1] = p0i - q0wi
+                data[2 * bi] = p1r + q1wr
+                data[2 * bi + 1] = p1i + q1wi
+                data[2 * di] = p1r - q1wr
+                data[2 * di + 1] = p1i - q1wi
+                k += 1
+            base += 2 * length
+        length *= 4
+
+    if length <= end_length:
         var half = length >> 1
+        var twiddle_offset = half - 1
+        var base = base_start
         while base < base_end:
             var k = 0
             while k + C <= half:
                 var even = base + k
                 var odd = even + half
-                var u_parts = data.load[width=W](2 * even).deinterleave()
-                var x_parts = data.load[width=W](2 * odd).deinterleave()
-                var w_parts = twiddles.load[width=W](
+                var u = data.load[width=W](2 * even).deinterleave()
+                var x = data.load[width=W](2 * odd).deinterleave()
+                var w = twiddles.load[width=W](
                     2 * (twiddle_offset + k)
                 ).deinterleave()
-                var wr = w_parts[0]
-                var wi = w_parts[1] * Float64(-direction)
-                var vr = x_parts[0] * wr - x_parts[1] * wi
-                var vi = x_parts[0] * wi + x_parts[1] * wr
-                data.store(2 * even, (u_parts[0] + vr).interleave(u_parts[1] + vi))
-                data.store(2 * odd, (u_parts[0] - vr).interleave(u_parts[1] - vi))
+                var wi = w[1] * Float64(-direction)
+                var vr = x[0] * w[0] - x[1] * wi
+                var vi = x[0] * wi + x[1] * w[0]
+                data.store(2 * even, (u[0] + vr).interleave(u[1] + vi))
+                data.store(2 * odd, (u[0] - vr).interleave(u[1] - vi))
                 k += C
             while k < half:
                 var even = base + k
@@ -109,9 +248,7 @@ def radix2_stages(
                 var xr = data[2 * odd]
                 var xi = data[2 * odd + 1]
                 var wr = twiddles[2 * (twiddle_offset + k)]
-                var wi = twiddles[2 * (twiddle_offset + k) + 1] * Float64(
-                    -direction
-                )
+                var wi = twiddles[2 * (twiddle_offset + k) + 1] * Float64(-direction)
                 var vr = xr * wr - xi * wi
                 var vi = xr * wi + xi * wr
                 data[2 * even] = ur + vr
@@ -120,8 +257,6 @@ def radix2_stages(
                 data[2 * odd + 1] = ui - vi
                 k += 1
             base += length
-        twiddle_offset += half
-        length *= 2
 
 
 def radix2(
@@ -170,6 +305,54 @@ def radix2(
 
     var parallel_block = 4096
     if threads > 1 and n >= 1048576:
+        var blocks = n // parallel_block
+
+        @always_inline
+        def transform_block(
+            block: Int,
+        ) {imm data, imm twiddles, imm parallel_block, imm direction}:
+            var start = block * parallel_block
+            radix2_stages(
+                data,
+                twiddles,
+                start,
+                start + parallel_block,
+                2,
+                parallel_block,
+                direction,
+            )
+
+        parallelize(transform_block, blocks, min(threads, blocks))
+        radix2_stages(
+            data,
+            twiddles,
+            0,
+            n,
+            2 * parallel_block,
+            n,
+            direction,
+        )
+    else:
+        radix2_stages(data, twiddles, 0, n, 2, n, direction)
+
+
+def bit_reversed_copy(src: Ptr, dst: Ptr, source: Int, target: Int, n: Int):
+    var bits = 0
+    var bit_count = n
+    while bit_count > 1:
+        bits += 1
+        bit_count >>= 1
+    for i in range(n):
+        var reversed = Int(bit_reverse(UInt64(i)) >> UInt64(64 - bits))
+        dst[2 * (target + reversed)] = src[2 * (source + i)]
+        dst[2 * (target + reversed) + 1] = src[2 * (source + i) + 1]
+
+
+def radix2_ordered(
+    data: Ptr, twiddles: Ptr, n: Int, direction: Int, threads: Int
+):
+    var parallel_block = 4096
+    if threads > 1 and n >= 262144:
         var blocks = n // parallel_block
 
         @always_inline
@@ -343,6 +526,18 @@ def pack_real(src: Ptr, work: Ptr, source: Int, n: Int):
         i += 1
 
 
+def pack_real_bit_reversed(src: Ptr, work: Ptr, source: Int, n: Int):
+    var bits = 0
+    var bit_count = n
+    while bit_count > 1:
+        bits += 1
+        bit_count >>= 1
+    for i in range(n):
+        var reversed = Int(bit_reverse(UInt64(i)) >> UInt64(64 - bits))
+        work[2 * reversed] = src[source + 2 * i]
+        work[2 * reversed + 1] = src[source + 2 * i + 1]
+
+
 def rfft_power2(
     src: Ptr,
     dst: Ptr,
@@ -366,8 +561,8 @@ def rfft_power2(
     var twiddles = scratch + 2 * n
     var final_twiddles = twiddles + 2 * (m - 1)
     for vector in range(vectors):
-        pack_real(src, scratch, vector * n, n)
-        radix2(scratch, twiddles, m, -1, threads)
+        pack_real_bit_reversed(src, scratch, vector * n, m)
+        radix2_ordered(scratch, twiddles, m, -1, threads)
 
         var y0r = scratch[0]
         var y0i = scratch[1]
@@ -423,10 +618,12 @@ def rfft_power2(
 
 
 def prepare_bluestein(
-    kernel: Ptr, twiddles: Ptr, n: Int, m: Int, direction: Int
+    kernel: Ptr, twiddles: Ptr, chirp: Ptr, n: Int, m: Int, direction: Int
 ):
     clear_complex(kernel, m)
     kernel[0] = 1.0
+    chirp[0] = 1.0
+    chirp[1] = 0.0
     for j in range(1, n):
         var jf = Float64(j)
         var angle = -Float64(direction) * PI * jf * jf / Float64(n)
@@ -436,6 +633,8 @@ def prepare_bluestein(
         kernel[2 * j + 1] = im
         kernel[2 * (m - j)] = re
         kernel[2 * (m - j) + 1] = im
+        chirp[2 * j] = re
+        chirp[2 * j + 1] = -im
     radix2(kernel, twiddles, m, -1)
 
 
@@ -445,6 +644,7 @@ def bluestein_vector(
     work: Ptr,
     kernel: Ptr,
     twiddles: Ptr,
+    chirp: Ptr,
     base: Int,
     n: Int,
     m: Int,
@@ -454,21 +654,32 @@ def bluestein_vector(
     threads: Int,
 ):
     clear_complex(work, m)
-    for j in range(n):
-        var source = base + j * inner
-        var xr = src[2 * source]
-        var xi = src[2 * source + 1]
-        var jf = Float64(j)
-        var angle = Float64(direction) * PI * jf * jf / Float64(n)
-        var wr = cos(angle)
-        var wi = sin(angle)
-        work[2 * j] = xr * wr - xi * wi
-        work[2 * j + 1] = xr * wi + xi * wr
-
-    radix2(work, twiddles, m, -1, threads)
     comptime W = simd_width_of[DType.float64]()
     comptime C = W // 2
     var j = 0
+    if inner == 1:
+        while j + C <= n:
+            var x = src.load[width=W](2 * (base + j)).deinterleave()
+            var w = chirp.load[width=W](2 * j).deinterleave()
+            work.store(
+                2 * j,
+                (x[0] * w[0] - x[1] * w[1]).interleave(
+                    x[0] * w[1] + x[1] * w[0]
+                ),
+            )
+            j += C
+    while j < n:
+        var source = base + j * inner
+        var xr = src[2 * source]
+        var xi = src[2 * source + 1]
+        var wr = chirp[2 * j]
+        var wi = chirp[2 * j + 1]
+        work[2 * j] = xr * wr - xi * wi
+        work[2 * j + 1] = xr * wi + xi * wr
+        j += 1
+
+    radix2(work, twiddles, m, -1, threads)
+    j = 0
     while j + C <= m:
         var a = work.load[width=W](2 * j).deinterleave()
         var b = kernel.load[width=W](2 * j).deinterleave()
@@ -490,16 +701,27 @@ def bluestein_vector(
     radix2(work, twiddles, m, 1, threads)
 
     var convolution_scale = scale / Float64(m)
-    for k in range(n):
-        var kf = Float64(k)
-        var angle = Float64(direction) * PI * kf * kf / Float64(n)
-        var wr = cos(angle)
-        var wi = sin(angle)
+    var k = 0
+    if inner == 1:
+        while k + C <= n:
+            var a = work.load[width=W](2 * k).deinterleave()
+            var w = chirp.load[width=W](2 * k).deinterleave()
+            dst.store(
+                2 * (base + k),
+                ((a[0] * w[0] - a[1] * w[1]) * convolution_scale).interleave(
+                    (a[0] * w[1] + a[1] * w[0]) * convolution_scale
+                ),
+            )
+            k += C
+    while k < n:
+        var wr = chirp[2 * k]
+        var wi = chirp[2 * k + 1]
         var ar = work[2 * k]
         var ai = work[2 * k + 1]
         var target = base + k * inner
         dst[2 * target] = (ar * wr - ai * wi) * convolution_scale
         dst[2 * target + 1] = (ar * wi + ai * wr) * convolution_scale
+        k += 1
 
 
 def prepare_workspace(scratch: Ptr, n: Int, direction: Int) -> Int:
@@ -511,8 +733,9 @@ def prepare_workspace(scratch: Ptr, n: Int, direction: Int) -> Int:
         var m = next_power_of_two(2 * n - 1)
         var kernel = scratch + 2 * m
         var twiddles = scratch + 4 * m
+        var chirp = scratch + 6 * m
         prepare_twiddles(twiddles, m)
-        prepare_bluestein(kernel, twiddles, n, m, direction)
+        prepare_bluestein(kernel, twiddles, chirp, n, m, direction)
     return 1
 
 
@@ -526,6 +749,7 @@ def transform_axis(
     direction: Int,
     scale: Float64,
     threads: Int,
+    in_place: Bool,
 ) -> Int:
     if n <= 0 or inner <= 0 or total % (n * inner) != 0:
         return 0
@@ -549,10 +773,22 @@ def transform_axis(
                 imm n,
                 imm direction,
                 imm scale,
+                imm in_place,
             }:
                 var base = left * n
-                copy_complex(src, dst, base, base, n)
-                radix2(dst + 2 * base, twiddles, n, direction)
+                if n > 512 and not in_place:
+                    bit_reversed_copy(src, dst, base, base, n)
+                    radix2_ordered(
+                        dst + 2 * base,
+                        twiddles,
+                        n,
+                        direction,
+                        1,
+                    )
+                else:
+                    if not in_place:
+                        copy_complex(src, dst, base, base, n)
+                    radix2(dst + 2 * base, twiddles, n, direction)
                 scale_complex(dst, base, n, scale)
 
             parallelize(transform_vector, outer, min(threads, outer))
@@ -571,19 +807,31 @@ def transform_axis(
             else:
                 for left in range(outer):
                     var base = left * n
-                    copy_complex(src, dst, base, base, n)
-                    radix2(
-                        dst + 2 * base,
-                        twiddles,
-                        n,
-                        direction,
-                        threads,
-                    )
+                    if n > 512 and not in_place:
+                        bit_reversed_copy(src, dst, base, base, n)
+                        radix2_ordered(
+                            dst + 2 * base,
+                            twiddles,
+                            n,
+                            direction,
+                            threads if outer == 1 else 1,
+                        )
+                    else:
+                        if not in_place:
+                            copy_complex(src, dst, base, base, n)
+                        radix2(
+                            dst + 2 * base,
+                            twiddles,
+                            n,
+                            direction,
+                            threads,
+                        )
                     scale_complex(dst, base, n, scale)
     else:
         var m = next_power_of_two(2 * n - 1)
         var kernel = scratch + 2 * m
         var twiddles = scratch + 4 * m
+        var chirp = scratch + 6 * m
         for left in range(outer):
             for right in range(inner):
                 var base = left * n * inner + right
@@ -593,6 +841,7 @@ def transform_axis(
                     scratch,
                     kernel,
                     twiddles,
+                    chirp,
                     base,
                     n,
                     m,

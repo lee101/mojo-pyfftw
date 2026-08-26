@@ -77,6 +77,13 @@ def test_simd_scalar_tail_matches_pyfftw():
     assert ours() == pytest.approx(theirs(), rel=2e-11, abs=2e-11)
 
 
+def test_bluestein_cached_chirp_simd_tail_matches_pyfftw():
+    values = rng.normal(size=1003) + 1j * rng.normal(size=1003)
+    ours = mfftw.builders.fft(values, threads=1)
+    theirs = pyfftw.builders.fft(values, threads=1)
+    assert ours() == pytest.approx(theirs(), rel=2e-10, abs=2e-10)
+
+
 @pytest.mark.parametrize("shape", [(2, 8192), (8, 65536), (1048576,)])
 def test_parallel_threshold_paths_match_pyfftw(shape):
     values = rng.normal(size=shape) + 1j * rng.normal(size=shape)
@@ -257,6 +264,14 @@ def test_ffi_rejects_unsafe_buffers_before_calling_mojo():
 
 def test_ffi_accepts_exact_in_place_complex_transform():
     values = (rng.normal(size=16) + 1j * rng.normal(size=16)).astype(np.complex128)
+    expected = upstream_fft.fft(values)
+    scratch = np.empty(_lib._scratch_size(values.size), dtype=np.complex128)
+    _lib.transform_axis(values, 0, -1, result=values, scratch=scratch)
+    assert values == pytest.approx(expected, rel=2e-11, abs=2e-11)
+
+
+def test_ffi_accepts_large_exact_in_place_complex_transform():
+    values = (rng.normal(size=1024) + 1j * rng.normal(size=1024)).astype(np.complex128)
     expected = upstream_fft.fft(values)
     scratch = np.empty(_lib._scratch_size(values.size), dtype=np.complex128)
     _lib.transform_axis(values, 0, -1, result=values, scratch=scratch)

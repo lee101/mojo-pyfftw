@@ -74,19 +74,24 @@ region.
 
 | case | Mojo | pyFFTW 0.15.1 | pyFFTW/Mojo |
 | --- | ---: | ---: | ---: |
-| complex FFT, 262144 | 8.887 ms | 3.831 ms | 0.43x, Mojo slower |
-| real RFFT, 262144 | 3.965 ms | 1.475 ms | 0.37x, Mojo slower |
-| batched FFT, 64 x 4096 | 11.644 ms | 1.982 ms | 0.17x, Mojo slower |
-| Bluestein FFT, 100003 | 29.029 ms | 11.387 ms | 0.39x, Mojo slower |
-| FFT2, 512 x 512 | 11.530 ms | 10.101 ms | 0.88x, Mojo slower |
-| batched FFT, 16 x 65536, 1 thread | 44.968 ms | 18.775 ms | 0.42x, Mojo slower |
-| batched FFT, 16 x 65536, 4 threads | 25.916 ms | 7.686 ms | 0.30x, Mojo slower |
+| complex FFT, 262144 | 5.211 ms | 3.536 ms | 0.68x, Mojo slower |
+| real RFFT, 262144 | 3.619 ms | 1.605 ms | 0.44x, Mojo slower |
+| batched FFT, 64 x 4096 | 3.274 ms | 1.739 ms | 0.53x, Mojo slower |
+| Bluestein FFT, 100003 | 16.283 ms | 10.431 ms | 0.64x, Mojo slower |
+| FFT2, 512 x 512 | 9.203 ms | 10.405 ms | 1.13x, Mojo faster |
+| batched FFT, 16 x 65536, 1 thread | 30.523 ms | 19.287 ms | 0.63x, Mojo slower |
+| batched FFT, 16 x 65536, 4 threads | 10.824 ms | 5.939 ms | 0.55x, Mojo slower |
 
-pyFFTW is faster on every case in this run; its generated plans use mature
-architecture-specific kernels. The four-thread row uses four threads on both sides
-and shows Mojo's thresholded parallel path reducing its large-batch execution time.
+pyFFTW remains faster on six cases in this run; its generated plans use mature
+architecture-specific kernels. Mojo is 1.13x faster on the 512 x 512 FFT2. The
+four-thread row uses four threads on both sides and shows Mojo's thresholded
+parallel path reducing its large-batch execution time.
 
-No GPU path is included.
+No GPU path is included. A radix-2 butterfly performs about 10 floating-point
+operations while moving at least 80 bytes of complex data and twiddles, roughly
+0.13 flops per byte. Even the fused two-stage kernel remains well below the
+2-flops-per-byte GPU cutoff, so host/device transfers and launch overhead are not
+justified for these kernels.
 
 ## How it works
 
@@ -99,16 +104,19 @@ real/imaginary memory layout.
 The shared-library boundary is one `ctypes` call per axis. NumPy buffers cross the C
 ABI zero-copy as 64-bit addresses, and the exported Mojo function reconstructs each
 as `UnsafePointer[Float64, AnyOrigin[mut=True]]`. Shape information crosses as
-scalar integers. Contiguous power-of-two transforms execute directly in the
-destination; strided transforms vectorize across adjacent independent columns.
+scalar integers. Contiguous out-of-place power-of-two transforms combine the input
+copy with the bit-reversal permutation, then execute directly in the destination.
+Adjacent radix-2 stages are fused in SIMD registers and the first pair uses a
+specialized radix-4 butterfly. Strided transforms vectorize across adjacent columns.
 Power-of-two float64 RFFT packs pairs into a half-sized complex FFT and reconstructs
 the Hermitian output with SIMD. Arbitrary-length Bluestein transforms reuse plan
 scratch.
 
 For non-power-of-two lengths, the plan workspace holds Bluestein's chirped input,
-pretransformed convolution kernel, and radix-2 twiddles at the next power-of-two
-length. Forward transforms are unnormalized. Inverse, forward-normalized, and
-orthonormal scaling is fused into the final Mojo store.
+pretransformed convolution kernel, radix-2 twiddles, and a cached chirp at the next
+power-of-two length. Runtime chirp multiplication is SIMD-vectorized. Forward
+transforms are unnormalized. Inverse, forward-normalized, and orthonormal scaling
+is fused into the final Mojo store.
 
 ## License
 

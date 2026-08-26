@@ -84,4 +84,5 @@ def mpf_transform_axis_f64(
         direction,
         scale,
         threads,
+        src == dst,
     )
