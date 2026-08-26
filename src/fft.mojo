@@ -1,9 +1,38 @@
-from std.algorithm import parallelize
 from std.math import cos, sin
+from std.runtime import initialize_runtime
+from std.runtime.asyncrt import TaskGroup
 from std.sys.info import simd_width_of
 
 comptime Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime PI = 3.141592653589793238462643383279502884
+
+
+@always_inline
+def parallelize[FuncType: def(Int) -> None](
+    func: FuncType, num_work_items: Int, num_workers: Int
+):
+    """Run work on the Mojo runtime without depending on the MAX package."""
+    if num_work_items <= 0:
+        return
+    var workers = min(num_work_items, num_workers)
+    if workers <= 1:
+        for i in range(num_work_items):
+            func(i)
+        return
+
+    initialize_runtime()
+    var chunk_size, extra_items = divmod(num_work_items, workers)
+
+    @always_inline
+    async def task(worker: Int) {imm}:
+        var start = worker * chunk_size + min(worker, extra_items)
+        for i in range(chunk_size + Int(worker < extra_items)):
+            func(start + i)
+
+    var tasks = TaskGroup()
+    for worker in range(workers):
+        tasks.create_task(task(worker))
+    tasks.wait()
 
 
 def is_power_of_two(n: Int) -> Bool:
