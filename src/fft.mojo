@@ -1,39 +1,11 @@
 from std.bit import bit_reverse
 from std.math import cos, sin
-from std.runtime import initialize_runtime
-from std.runtime.asyncrt import TaskGroup
 from std.sys.info import simd_width_of
 
 comptime Ptr = UnsafePointer[Float64, AnyOrigin[mut=True]]
 comptime PI = 3.141592653589793238462643383279502884
 
 
-@always_inline
-def parallelize[FuncType: def(Int) -> None](
-    func: FuncType, num_work_items: Int, num_workers: Int
-):
-    """Run work on the Mojo runtime without depending on the MAX package."""
-    if num_work_items <= 0:
-        return
-    var workers = min(num_work_items, num_workers)
-    if workers <= 1:
-        for i in range(num_work_items):
-            func(i)
-        return
-
-    initialize_runtime()
-    var chunk_size, extra_items = divmod(num_work_items, workers)
-
-    @always_inline
-    async def task(worker: Int) {imm}:
-        var start = worker * chunk_size + min(worker, extra_items)
-        for i in range(chunk_size + Int(worker < extra_items)):
-            func(start + i)
-
-    var tasks = TaskGroup()
-    for worker in range(workers):
-        tasks.create_task(task(worker))
-    tasks.wait()
 
 
 def is_power_of_two(n: Int) -> Bool:
@@ -306,11 +278,7 @@ def radix2(
     var parallel_block = 4096
     if threads > 1 and n >= 1048576:
         var blocks = n // parallel_block
-
-        @always_inline
-        def transform_block(
-            block: Int,
-        ) {imm data, imm twiddles, imm parallel_block, imm direction}:
+        for block in range(blocks):
             var start = block * parallel_block
             radix2_stages(
                 data,
@@ -321,8 +289,6 @@ def radix2(
                 parallel_block,
                 direction,
             )
-
-        parallelize(transform_block, blocks, min(threads, blocks))
         radix2_stages(
             data,
             twiddles,
@@ -354,11 +320,7 @@ def radix2_ordered(
     var parallel_block = 4096
     if threads > 1 and n >= 262144:
         var blocks = n // parallel_block
-
-        @always_inline
-        def transform_block(
-            block: Int,
-        ) {imm data, imm twiddles, imm parallel_block, imm direction}:
+        for block in range(blocks):
             var start = block * parallel_block
             radix2_stages(
                 data,
@@ -369,8 +331,6 @@ def radix2_ordered(
                 parallel_block,
                 direction,
             )
-
-        parallelize(transform_block, blocks, min(threads, blocks))
         radix2_stages(
             data,
             twiddles,
@@ -739,6 +699,46 @@ def prepare_workspace(scratch: Ptr, n: Int, direction: Int) -> Int:
     return 1
 
 
+def transform_vector(
+    src: Ptr,
+    dst: Ptr,
+    twiddles: Ptr,
+    n: Int,
+    direction: Int,
+    scale: Float64,
+    in_place: Bool,
+    left: Int,
+):
+    """Transform one contiguous vector; vectors never share src or dst."""
+    var base = left * n
+    if n > 512 and not in_place:
+        bit_reversed_copy(src, dst, base, base, n)
+        radix2_ordered(dst + 2 * base, twiddles, n, direction, 1)
+    else:
+        if not in_place:
+            copy_complex(src, dst, base, base, n)
+        radix2(dst + 2 * base, twiddles, n, direction)
+    scale_complex(dst, base, n, scale)
+
+
+def transform_vectors_range(
+    src: Ptr,
+    dst: Ptr,
+    twiddles: Ptr,
+    n: Int,
+    direction: Int,
+    scale: Float64,
+    in_place: Bool,
+    first: Int,
+    last: Int,
+):
+    """Range-taking entry point so the Python shim can fan vectors out."""
+    for left in range(first, last):
+        transform_vector(
+            src, dst, twiddles, n, direction, scale, in_place, left
+        )
+
+
 def transform_axis(
     src: Ptr,
     dst: Ptr,
@@ -756,77 +756,22 @@ def transform_axis(
     var outer = total // (n * inner)
     if is_power_of_two(n):
         var twiddles = scratch + 2 * n
-        if (
-            threads > 1
-            and inner == 1
-            and outer >= 2
-            and total >= 524288
-        ):
-
-            @always_inline
-            def transform_vector(
-                left: Int,
-            ) {
-                imm src,
-                imm dst,
-                imm twiddles,
-                imm n,
-                imm direction,
-                imm scale,
-                imm in_place,
-            }:
-                var base = left * n
-                if n > 512 and not in_place:
-                    bit_reversed_copy(src, dst, base, base, n)
-                    radix2_ordered(
-                        dst + 2 * base,
-                        twiddles,
-                        n,
-                        direction,
-                        1,
-                    )
-                else:
-                    if not in_place:
-                        copy_complex(src, dst, base, base, n)
-                    radix2(dst + 2 * base, twiddles, n, direction)
-                scale_complex(dst, base, n, scale)
-
-            parallelize(transform_vector, outer, min(threads, outer))
+        if inner == 1:
+            transform_vectors_range(
+                src,
+                dst,
+                twiddles,
+                n,
+                direction,
+                scale,
+                in_place,
+                0,
+                outer,
+            )
         else:
-            if inner > 1:
-                copy_complex(src, dst, 0, 0, total)
-                radix2_strided(
-                    dst,
-                    twiddles,
-                    n,
-                    inner,
-                    outer,
-                    direction,
-                )
-                scale_complex(dst, 0, total, scale)
-            else:
-                for left in range(outer):
-                    var base = left * n
-                    if n > 512 and not in_place:
-                        bit_reversed_copy(src, dst, base, base, n)
-                        radix2_ordered(
-                            dst + 2 * base,
-                            twiddles,
-                            n,
-                            direction,
-                            threads if outer == 1 else 1,
-                        )
-                    else:
-                        if not in_place:
-                            copy_complex(src, dst, base, base, n)
-                        radix2(
-                            dst + 2 * base,
-                            twiddles,
-                            n,
-                            direction,
-                            threads,
-                        )
-                    scale_complex(dst, base, n, scale)
+            copy_complex(src, dst, 0, 0, total)
+            radix2_strided(dst, twiddles, n, inner, outer, direction)
+            scale_complex(dst, 0, total, scale)
     else:
         var m = next_power_of_two(2 * n - 1)
         var kernel = scratch + 2 * m
@@ -834,7 +779,6 @@ def transform_axis(
         var chirp = scratch + 6 * m
         for left in range(outer):
             for right in range(inner):
-                var base = left * n * inner + right
                 bluestein_vector(
                     src,
                     dst,
@@ -842,7 +786,7 @@ def transform_axis(
                     kernel,
                     twiddles,
                     chirp,
-                    base,
+                    left * n * inner + right,
                     n,
                     m,
                     inner,

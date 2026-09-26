@@ -4,6 +4,7 @@ import ctypes
 import math
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -11,6 +12,24 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 LIB = os.environ.get("MOJO_PYFFTW_LIB", os.path.join(ROOT, "dist", "libmojo-pyfftw.so"))
 I = ctypes.c_int64
 F = ctypes.c_double
+
+
+def _fan_out_eligible(total: int, n: int, inner: int, threads: int) -> bool:
+    """Mirror the kernel's own threshold for the per-vector parallel path.
+
+    A butterfly is ~6 flops per 32 bytes touched, so this is compute-bound
+    work over disjoint vectors rather than a bandwidth-bound sweep.
+    """
+    return (
+        threads > 1
+        and inner == 1
+        and n > 0
+        and (n & (n - 1)) == 0
+        and total % n == 0
+        and total // n >= 2
+        and total >= 524288
+    )
+
 
 _library: ctypes.CDLL | None = None
 
@@ -53,6 +72,9 @@ def lib() -> ctypes.CDLL:
         fn = _library.mpf_transform_axis_f64
         fn.argtypes = [I, I, I, I, I, I, I, F, I]
         fn.restype = I
+        vectors = _library.mpf_transform_vectors_f64
+        vectors.argtypes = [I, I, I, I, I, I, F, I, I]
+        vectors.restype = I
     return _library
 
 
@@ -171,6 +193,32 @@ def transform_axis(
         raise ValueError("direction must be -1 or 1")
     if not prepared:
         prepare_workspace(scratch, n, direction)
+    threads = max(1, int(threads))
+    if _fan_out_eligible(source.size, n, inner, threads):
+        outer = source.size // n
+        workers = min(threads, outer)
+        parts = [
+            ((index * outer) // workers, ((index + 1) * outer) // workers)
+            for index in range(workers)
+        ]
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            oks = list(pool.map(
+                lambda part: lib().mpf_transform_vectors_f64(
+                    source.ctypes.data,
+                    result.ctypes.data,
+                    scratch.ctypes.data,
+                    source.size,
+                    n,
+                    direction,
+                    scale,
+                    part[0],
+                    part[1],
+                ),
+                parts,
+            ))
+        if not all(oks):
+            raise ValueError("invalid transform dimensions")
+        return result
     ok = lib().mpf_transform_axis_f64(
         source.ctypes.data,
         result.ctypes.data,
@@ -180,7 +228,7 @@ def transform_axis(
         inner,
         direction,
         scale,
-        max(1, int(threads)),
+        threads,
     )
     if not ok:
         raise ValueError("invalid transform dimensions")
